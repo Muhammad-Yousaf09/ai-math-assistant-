@@ -1,102 +1,115 @@
 import streamlit as st
 from langchain_groq import ChatGroq
-from langchain.chains import LLMChain,LLMMathChain
+from langchain.chains import LLMChain, LLMMathChain
 from langchain.prompts import PromptTemplate
 from langchain_community.utilities import WikipediaAPIWrapper
+from langchain.agents import Tool, initialize_agent
 from langchain.agents.agent_types import AgentType
-from langchain.agents import Tool,initialize_agent
 from langchain.callbacks import StreamlitCallbackHandler
 
+# -----------------------------
+# Set up Streamlit UI
+# -----------------------------
+st.set_page_config(page_title="Text To Math Problems Solver", page_icon="🧠")
+st.title("📊 Text To Math Problems Solver & Wikipedia Assistant")
 
-## set up the streamlit app
-st.set_page_config(page_title="Text To Math Problems Solver Data Search Assistant", page_icon=":robot:")
-st.title("Text To Math Problems Solver Data Search Assistant")
+# -----------------------------
+# Get Groq API Key from sidebar
+# -----------------------------
+groq_api_key = st.sidebar.text_input("🔐 Enter your Groq API Key", type="password")
 
-# Initialize the Groq model
-groq_api_key=st.sidebar.text_input("Enter your Groq API Key", type="password")
+llm = None
 if not groq_api_key:
-    st.warning("Please enter your Groq API Key to continue.")
+    st.warning("Please enter your Groq API Key to start.")
 else:
-    st.success("Groq model initialized successfully!")
+    try:
+        llm = ChatGroq(model="gemma2-9b-it", groq_api_key=groq_api_key)
+        st.success("✅ Groq model initialized successfully!")
+    except Exception as e:
+        st.error(f"Error initializing Groq model: {e}")
+        llm = None
 
-# initialize the language model
-llm = ChatGroq(model="gemma2-9b-it", groq_api_key=groq_api_key)
-
-
-## initializing the tools
-wikipedia = WikipediaAPIWrapper()
-wikipedia_tool = Tool(
-        name="Wikipedia",
-        func=wikipedia.run,
-        description="Searches Wikipedia for information.",
-        return_direct=True
-    )
-
-## initializing the Math Tool
-math_chain=LLMMathChain.from_llm(
-    llm=llm)
-calculator=Tool(
-    name="Calculator",
-    func=math_chain.run,
-    description="Useful for solving math problems.",
-    return_direct=True
-    )
-prompt="""You are a math problem solver. and mathematical question. logically arrive at the solution and display it point wise for the question below Please solve the following problem:
-Question: {question}
-Answer:
-"""
-prompt_template = PromptTemplate(
-    input_variables=["question"],
-    template=prompt
-)
-
-
-## combine all the tools into chain
-LLMChain = LLMChain(
-    llm=llm,
-    prompt=prompt_template
-)
-
-## Adding reasoning tool
-reasoning_tool = Tool(
-    name="Reasoning",
-    func=LLMChain.run,
-    description="Useful for reasoning about math problems.",
-    return_direct=True
-)
-
-## initializing the agent
-assistant_agent = initialize_agent(
-    tools=[wikipedia_tool, calculator, reasoning_tool],
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    llm=llm,
-    verbose=True,
-    handle_parsing_errors=True
-)
-
+# -----------------------------
+# Initialize Chat History
+# -----------------------------
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
-        {"role": "assistant", "content": "Hello, I need help with a math problem."}
+        {"role": "assistant", "content": "Hi! I can help solve math problems and fetch info from Wikipedia."}
     ]
 
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
+# -----------------------------
+# Initialize Tools & Agent
+# -----------------------------
+if llm:
+    # Math solving chain
+    math_chain = LLMMathChain.from_llm(llm=llm)
 
-# Lets start the interaction
-question = st.text_area("Enter your question ","What is the sum of 2 and 3?",)
+    # Wikipedia tool
+    wikipedia = WikipediaAPIWrapper()
+    wikipedia_tool = Tool(
+        name="Wikipedia",
+        func=wikipedia.run,
+        description="Use this tool to search Wikipedia for information.",
+        return_direct=True
+    )
 
-if st.button("find my answer"):
-    if question:
-        with st.spinner("Generating response..."):
+    # Math calculator tool
+    calculator = Tool(
+        name="Calculator",
+        func=math_chain.run,
+        description="Use this tool to solve math problems.",
+        return_direct=True
+    )
+
+    # Reasoning prompt template
+    reasoning_prompt = PromptTemplate(
+        input_variables=["question"],
+        template="""
+You are a logical math assistant. Solve the math question below with step-by-step explanation:
+
+Question: {question}
+Answer:
+"""
+    )
+
+    reasoning_chain = LLMChain(llm=llm, prompt=reasoning_prompt)
+    reasoning_tool = Tool(
+        name="Reasoning",
+        func=reasoning_chain.run,
+        description="Use this tool for step-by-step reasoning of math problems.",
+        return_direct=True
+    )
+
+    # Initialize agent with all tools
+    assistant_agent = initialize_agent(
+        tools=[wikipedia_tool, calculator, reasoning_tool],
+        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        llm=llm,
+        verbose=True,
+        handle_parsing_errors=True
+    )
+
+    # -----------------------------
+    # Main Chat Interface
+    # -----------------------------
+    question = st.text_area("💬 Enter your question", "What is the sum of 15 and 7?")
+
+    if st.button("🔍 Find Answer"):
+        if question.strip() != "":
             st.session_state.messages.append({"role": "user", "content": question})
             st.chat_message("user").write(question)
 
-            st_cb= StreamlitCallbackHandler(st.container(),expand_new_thoughts=False)
-            response=assistant_agent.run(st.session_state.messages, callbacks=[st_cb])
+            with st.spinner("Thinking..."):
+                st_cb = StreamlitCallbackHandler(st.container(), expand_new_thoughts=False)
+                try:
+                    response = assistant_agent.run(question, callbacks=[st_cb])
+                except Exception as e:
+                    response = f"⚠️ Error: {str(e)}"
 
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            st.write('### Response:')
-            st.success(response)
-    else:
-        st.warning("Please enter a question to get an answer.")
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.chat_message("assistant").write(response)
+        else:
+            st.warning("Please enter a question to get an answer.")
